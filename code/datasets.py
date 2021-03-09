@@ -26,7 +26,7 @@ else:
 
 
 def prepare_data(data):
-    imgs, captions, captions_lens, class_ids, keys = data
+    imgs, captions, captions_lens, class_ids, keys, sent_ix = data
 
     # sort data by the length in a decreasing order
     sorted_cap_lens, sorted_cap_indices = \
@@ -44,6 +44,7 @@ def prepare_data(data):
     class_ids = class_ids[sorted_cap_indices].numpy()
     # sent_indices = sent_indices[sorted_cap_indices]
     keys = [keys[i] for i in sorted_cap_indices.numpy()]
+    sent_ix = sent_ix[sorted_cap_indices].numpy()
     # print('keys', type(keys), keys[-1])  # list
     if cfg.CUDA:
         captions = Variable(captions).cuda()
@@ -53,7 +54,7 @@ def prepare_data(data):
         sorted_cap_lens = Variable(sorted_cap_lens)
 
     return [real_imgs, captions, sorted_cap_lens,
-            class_ids, keys]
+            class_ids, keys, sent_ix]
 
 
 def get_imgs(img_path, imsize, bbox=None,
@@ -305,9 +306,9 @@ class TextDataset(data.Dataset):
         sent_ix = random.randint(0, self.embeddings_num)
         new_sent_ix = index * self.embeddings_num + sent_ix
         caps, cap_len = self.get_caption(new_sent_ix)
-        return imgs, caps, cap_len, cls_id, key
+        return imgs, caps, cap_len, cls_id, key, sent_ix
 
-    def get_mis_caption(self, cls_id):
+    def get_mis_caption(self, cls_id, device='cpu'):
         mis_match_captions_t = []
         mis_match_captions = torch.zeros(99, cfg.TEXT.WORDS_NUM)
         mis_match_captions_len = torch.zeros(99)
@@ -327,7 +328,7 @@ class TextDataset(data.Dataset):
         #ipdb.set_trace()
         for i in range(99):
             mis_match_captions[i,:] = mis_match_captions_t[sorted_cap_indices[i]]
-        return mis_match_captions.type(torch.LongTensor).cuda(), sorted_cap_lens.type(torch.LongTensor).cuda()
+        return mis_match_captions.type(torch.LongTensor).to(device), sorted_cap_lens.type(torch.LongTensor).to(device)
 
     def __len__(self):
         return len(self.filenames)

@@ -1,3 +1,7 @@
+# Forked from DM-GAN for r-precision calculation
+
+---
+
 # *DM-GAN: Dynamic Memory Generative Adversarial Networks for Text-to-Image Synthesis*
 
 ### Introduction

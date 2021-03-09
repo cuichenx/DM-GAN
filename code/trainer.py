@@ -1,8 +1,12 @@
 from __future__ import print_function
+
+import pickle
+
 from six.moves import range
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.autograd import Variable
 import torch.backends.cudnn as cudnn
@@ -366,7 +370,7 @@ class condGANTrainer(object):
             im = Image.fromarray(ndarr)
             im.save(fullpath)
 
-    def sampling(self, split_dir):
+    def sampling(self, split_dir, device='cpu'):
         if cfg.TRAIN.NET_G == '':
             print('Error: the path for morels is not found!')
         else:
@@ -378,7 +382,7 @@ class condGANTrainer(object):
             else:
                 netG = G_NET()
             netG.apply(weights_init)
-            netG.cuda()
+            netG.to(device)
             netG.eval()
 
             # load text encoder
@@ -386,7 +390,7 @@ class condGANTrainer(object):
             state_dict = torch.load(cfg.TRAIN.NET_E, map_location=lambda storage, loc: storage)
             text_encoder.load_state_dict(state_dict)
             print('Load text encoder from:', cfg.TRAIN.NET_E)
-            text_encoder = text_encoder.cuda()
+            text_encoder = text_encoder.to(device)
             text_encoder.eval()
 
             #load image encoder
@@ -395,13 +399,13 @@ class condGANTrainer(object):
             state_dict = torch.load(img_encoder_path, map_location=lambda storage, loc: storage)
             image_encoder.load_state_dict(state_dict)
             print('Load image encoder from:', img_encoder_path)
-            image_encoder = image_encoder.cuda()
+            image_encoder = image_encoder.to(device)
             image_encoder.eval()
 
             batch_size = self.batch_size
             nz = cfg.GAN.Z_DIM
             noise = Variable(torch.FloatTensor(batch_size, nz), volatile=True)
-            noise = noise.cuda()
+            noise = noise.to(device)
 
             model_dir = cfg.TRAIN.NET_G
             state_dict = torch.load(model_dir, map_location=lambda storage, loc: storage)
@@ -416,8 +420,21 @@ class condGANTrainer(object):
 
             cnt = 0
             R_count = 0
-            R = np.zeros(30000)
+            truncate_R = 3000  # 30000
+            R = np.zeros(truncate_R)
             cont = True
+
+            if cfg.T2I_IMAGES:
+                if 'debug' in cfg.T2I_IMAGES:
+                    print('loading real images')
+                    root_dir = "/h/cuichenx/Datasets/CUB/"
+                    test_mask = np.load(os.path.join(root_dir, 'test_split_mask.npy'))  # test mask
+                    t2i_images = torch.from_numpy(np.load("/h/cuichenx/Datasets/CUB/my_cub128.npy")[test_mask]).permute(0, 3, 1, 2)
+                else:
+                    t2i_images = torch.from_numpy(np.load(cfg.T2I_IMAGES)).permute(0, 1, 4, 2, 3)  # (2933, 10, 3, 128, 128)
+                testnames = pickle.load(open("/h/cuichenx/Datasets/CUB/test/filenames.pickle", 'rb'))
+                filename_to_index = {testnames[v]:v for v in range(len(testnames))}
+
             for ii in range(11):  # (cfg.TEXT.CAPTIONS_PER_IMAGE):
                 if (cont == False):
                     break
@@ -430,7 +447,7 @@ class condGANTrainer(object):
                     # if step > 50:
                     #     break
 
-                    imgs, captions, cap_lens, class_ids, keys = prepare_data(data)
+                    imgs, captions, cap_lens, class_ids, keys, sent_ix = prepare_data(data)
 
                     hidden = text_encoder.init_hidden(batch_size)
                     # words_embs: batch_size x nef x seq_len
@@ -445,29 +462,41 @@ class condGANTrainer(object):
                     #######################################################
                     # (2) Generate fake images
                     ######################################################
-                    noise.data.normal_(0, 1)
-                    fake_imgs, _, _, _ = netG(noise, sent_emb, words_embs, mask, cap_lens)
-                    for j in range(batch_size):
-                        s_tmp = '%s/single/%s' % (save_dir, keys[j])
-                        folder = s_tmp[:s_tmp.rfind('/')]
-                        if not os.path.isdir(folder):
-                            #print('Make a new folder: ', folder)
-                            mkdir_p(folder)
-                        k = -1
-                        # for k in range(len(fake_imgs)):
-                        im = fake_imgs[k][j].data.cpu().numpy()
-                        # [-1, 1] --> [0, 255]
-                        im = (im + 1.0) * 127.5
-                        im = im.astype(np.uint8)
-                        im = np.transpose(im, (1, 2, 0))
-                        im = Image.fromarray(im)
-                        fullpath = '%s_s%d_%d.png' % (s_tmp, k, ii)
-                        im.save(fullpath)
+                    if cfg.T2I_IMAGES:
+                        imgs = []
+                        for i in range(len(keys)):
+                            if 'debug' in cfg.T2I_IMAGES:
+                                imgs.append(t2i_images[filename_to_index[keys[i]], ...])
+                            else:
+                                imgs.append(t2i_images[filename_to_index[keys[i]], sent_ix[i], ...])
 
-                    _, cnn_code = image_encoder(fake_imgs[-1])
+                        image_decoder_input = torch.stack(imgs, dim=0).to(device, torch.float) /255 * 2 - 1 # [0, 255] -> [-1, 1]
+                        image_decoder_input = F.interpolate(image_decoder_input, size=256, mode='bilinear')  # 128x128 -> 256x256
+                    else:
+                        noise.data.normal_(0, 1)
+                        fake_imgs, _, _, _ = netG(noise, sent_emb, words_embs, mask, cap_lens)
+                        for j in range(batch_size):
+                            s_tmp = '%s/single/%s' % (save_dir, keys[j])
+                            folder = s_tmp[:s_tmp.rfind('/')]
+                            if not os.path.isdir(folder):
+                                #print('Make a new folder: ', folder)
+                                mkdir_p(folder)
+                            k = -1
+                            # for k in range(len(fake_imgs)):
+                            im = fake_imgs[k][j].data.cpu().numpy()
+                            # [-1, 1] --> [0, 255]
+                            im = (im + 1.0) * 127.5
+                            im = im.astype(np.uint8)
+                            im = np.transpose(im, (1, 2, 0))
+                            im = Image.fromarray(im)
+                            fullpath = '%s_s%d_%d.png' % (s_tmp, k, ii)
+                            im.save(fullpath)
+                        image_decoder_input = fake_imgs[-1]
+
+                    _, cnn_code = image_encoder(image_decoder_input)  # image encoder takes in shape (bs, 3, 256, 256), pixels [-1, 1]
 
                     for i in range(batch_size):
-                        mis_captions, mis_captions_len = self.dataset.get_mis_caption(class_ids[i])
+                        mis_captions, mis_captions_len = self.dataset.get_mis_caption(class_ids[i], device=device)
                         hidden = text_encoder.init_hidden(99)
                         _, sent_emb_t = text_encoder(mis_captions, mis_captions_len, hidden)
                         rnn_code = torch.cat((sent_emb[i, :].unsqueeze(0), sent_emb_t), 0)
@@ -482,14 +511,23 @@ class condGANTrainer(object):
                             R[R_count] = 1
                         R_count += 1
 
-                    if R_count >= 30000:
-                        sum = np.zeros(10)
-                        np.random.shuffle(R)
-                        for i in range(10):
-                            sum[i] = np.average(R[i * 3000:(i + 1) * 3000 - 1])
-                        R_mean = np.average(sum)
-                        R_std = np.std(sum)
+                    if R_count >= truncate_R:
+                        if truncate_R == 30000:
+                            sum = np.zeros(10)
+                            np.random.shuffle(R)
+                            for i in range(10):
+                                sum[i] = np.average(R[i * 3000:(i + 1) * 3000 - 1])
+                            R_mean = np.average(sum)
+                            R_std = np.std(sum)
+                        else:
+                            R_mean = np.average(R)
+                            R_std = np.std(R)
+                        print("*"*80)
                         print("R mean:{:.4f} std:{:.4f}".format(R_mean, R_std))
+                        print("*"*80)
+
+                        with open("/h/cuichenx/DM-GAN/result.txt", 'a') as f:
+                            f.write("{} R mean:{:.4f} std:{:.4f}\n".format(cfg.T2I_IMAGES, R_mean, R_std))
                         cont = False
 
 

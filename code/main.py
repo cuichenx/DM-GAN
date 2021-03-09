@@ -19,8 +19,7 @@ import torchvision.transforms as transforms
 
 dir_path = (os.path.abspath(os.path.join(os.path.realpath(__file__), './.')))
 sys.path.append(dir_path)
-
-
+torch.backends.cudnn.enabled=False
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a AttnGAN network')
     parser.add_argument('--cfg', dest='cfg_file',
@@ -30,6 +29,7 @@ def parse_args():
     parser.add_argument('--data_dir', dest='data_dir', type=str, default='')
     parser.add_argument('--NET_G', type=str, default='')
     parser.add_argument('--manualSeed', type=int, help='manual seed')
+    parser.add_argument('--t2i_images', type=str, default='', help='path to t2i images')
     args = parser.parse_args()
     return args
 
@@ -99,6 +99,11 @@ if __name__ == "__main__":
 
     if args.data_dir != '':
         cfg.DATA_DIR = args.data_dir
+
+    if args.t2i_images != '':
+        cfg.T2I_IMAGES = "/h/cuichenx/Evaluations/cub/" + args.t2i_images
+    else:
+        cfg.T2I_IMAGES = None
     print('Using config:')
     pprint.pprint(cfg)
 
@@ -111,10 +116,10 @@ if __name__ == "__main__":
     torch.manual_seed(args.manualSeed)
     if cfg.CUDA:
         torch.cuda.manual_seed_all(args.manualSeed)
-    torch.cuda.set_device(cfg.GPU_ID)
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cudnn.deterministic = True
-    print("Seed: %d" % (args.manualSeed))
+        torch.cuda.set_device(cfg.GPU_ID)
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.deterministic = True
+        print("Seed: %d" % (args.manualSeed))
 
     now = datetime.datetime.now(dateutil.tz.tzlocal())
     timestamp = now.strftime('%Y_%m_%d_%H_%M_%S')
@@ -149,7 +154,7 @@ if __name__ == "__main__":
     else:
         '''generate images from pre-extracted embeddings'''
         if cfg.B_VALIDATION:
-            algo.sampling(split_dir)  # generate images for the whole valid dataset
+            algo.sampling(split_dir, device='cuda' if cfg.CUDA else 'cpu')  # generate images for the whole valid dataset
         else:
             gen_example(dataset.wordtoix, algo)  # generate images for customized captions
     end_t = time.time()
